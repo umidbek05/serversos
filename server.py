@@ -5,10 +5,11 @@ import numpy as np
 import queue
 import threading
 import json
+import os
 
 # --- Sozlamalar ---
 HOST = '0.0.0.0'
-PORT = 80
+PORT = int(os.environ.get("PORT", 80))
 SAMPLE_RATE = 16000
 CHANNELS = 1
 
