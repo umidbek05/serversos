@@ -5,24 +5,24 @@ import os
 
 # --- Sozlamalar ---
 HOST = '0.0.0.0'
-# Railway portni dinamik beradi, shuning uchun os.environ ishlatamiz
 PORT = int(os.environ.get("PORT", 80))
-SAMPLE_RATE = 16000
-CHANNELS = 1
 
 # --- Global o'zgaruvchilar ---
-# audio_queue endi kerak emas, chunki server orqali to'g'ridan-to'g'ri uzatamiz
 device_connections = {}  # deviceId -> websocket
 authorized_devices = set()
 frontend_ws = None
 
 async def notify_frontend():
-    if frontend_ws:
-        devices = [{"id": d, "status": "active" if d in authorized_devices else "pending"} for d in device_connections]
-        try: 
+    """Frontendga qurilmalar ro'yxatini yuborish"""
+    if frontend_ws and frontend_ws.open:
+        devices = [
+            {"id": dev_id, "status": "active" if dev_id in authorized_devices else "pending"} 
+            for dev_id in device_connections
+        ]
+        try:
             await frontend_ws.send(json.dumps({"type": "list", "devices": devices}))
-        except: 
-            pass
+        except Exception as e:
+            print(f"Frontendga xabar yuborishda xato: {e}")
 
 async def handle_client(websocket):
     global frontend_ws
@@ -30,67 +30,125 @@ async def handle_client(websocket):
     
     try:
         async for message in websocket:
-            # 1. AUDIO (BYTES)
+            # 1. AUDIO (BYTES) - ESP32 dan keladi
             if isinstance(message, bytes):
-                # ESP32 dan kelgan ovozni Frontend ga yo'naltiramiz
-                if frontend_ws and device_id in authorized_devices:
+                # Ovozli aloqa faqat authorized qurilmalardan qabul qilinadi
+                if device_id and device_id in authorized_devices and frontend_ws and frontend_ws.open:
                     try:
+                        # Audio ma'lumotlarni frontendga yuborish
                         await frontend_ws.send(message)
-                    except:
-                        pass
+                        print(f"Audio yuborildi: {len(message)} bytes")
+                    except Exception as e:
+                        print(f"Audio yuborishda xato: {e}")
                 continue
                 
             # 2. JSON (TEXT)
-            data = json.loads(message)
+            try:
+                data = json.loads(message)
+            except json.JSONDecodeError:
+                print(f"Noto'g'ri JSON format: {message[:100]}")
+                continue
+                
             msg_type = data.get('type')
+            print(f"Xabar keldi: {msg_type}")
 
             if msg_type == 'frontend':
                 frontend_ws = websocket
-                print("Frontend ulandi")
+                print("✅ Frontend ulandi")
                 await notify_frontend()
             
             elif msg_type == 'register':
                 device_id = data.get('deviceId')
-                device_connections[device_id] = websocket
-                print(f"Qurilma ulandi: {device_id}")
-                await notify_frontend()
+                if device_id:
+                    device_connections[device_id] = websocket
+                    print(f"✅ Qurilma ulandi: {device_id}")
+                    # Qurilmaga ulanganligi haqida javob
+                    await websocket.send(json.dumps({"type": "registered", "deviceId": device_id}))
+                    await notify_frontend()
 
             elif msg_type == 'authorize':
                 target_id = data.get('deviceId')
-                if target_id in device_connections:
+                if target_id and target_id in device_connections:
                     authorized_devices.add(target_id)
-                    # Qurilmaga ruxsat berilgani haqida xabar yuboramiz
-                    await device_connections[target_id].send(json.dumps({"type": "authorized"}))
+                    # Qurilmaga ruxsat berilgani haqida xabar
+                    try:
+                        await device_connections[target_id].send(
+                            json.dumps({"type": "authorized", "status": "active"})
+                        )
+                        print(f"✅ Ruxsat berildi: {target_id}")
+                    except Exception as e:
+                        print(f"Qurilmaga ruxsat xabarini yuborishda xato: {e}")
+                    
+                    # Frontendga yangi statusni yuborish
                     await notify_frontend()
-                    print(f"Ruxsat berildi: {target_id}")
 
             elif msg_type == 'close':
                 target_id = data.get('deviceId')
-                if target_id in authorized_devices: 
-                    authorized_devices.remove(target_id)
-                if target_id in device_connections:
-                    await device_connections[target_id].send(json.dumps({"type": "disconnect"}))
-                    await device_connections[target_id].close()
-                await notify_frontend()
+                if target_id:
+                    if target_id in authorized_devices:
+                        authorized_devices.remove(target_id)
+                    
+                    if target_id in device_connections:
+                        try:
+                            await device_connections[target_id].send(
+                                json.dumps({"type": "disconnect"})
+                            )
+                            await device_connections[target_id].close()
+                        except:
+                            pass
+                        del device_connections[target_id]
+                    
+                    print(f"❌ Uzildi: {target_id}")
+                    await notify_frontend()
+                    
+            elif msg_type == 'ping':
+                # Keep-alive uchun
+                await websocket.send(json.dumps({"type": "pong"}))
 
+    except websockets.exceptions.ConnectionClosed:
+        print(f"Uzilish: {device_id or 'Noma\'lum'}")
     except Exception as e:
         print(f"Xatolik: {e}")
     finally:
         # Tozalash ishlari
         if device_id:
-            if device_id in device_connections: 
+            if device_id in device_connections:
                 del device_connections[device_id]
-            if device_id in authorized_devices: 
+            if device_id in authorized_devices:
                 authorized_devices.remove(device_id)
+            print(f"Tozalandi: {device_id}")
             await notify_frontend()
-        if websocket == frontend_ws: 
+        
+        if websocket == frontend_ws:
             frontend_ws = None
+            print("Frontend uzildi")
 
 async def main():
-    # Railway serverda InputStream bo'lmaydi, shuning uchun uni o'chirib faqat websockets qoldiramiz
-    async with websockets.serve(handle_client, HOST, PORT):
-        print(f"Server {HOST}:{PORT} da ishlamoqda...")
-        await asyncio.Future() # Serverni doimiy ochiq ushlab turadi
-    
+    """Serverni ishga tushirish"""
+    try:
+        async with websockets.serve(
+            handle_client, 
+            HOST, 
+            PORT,
+            ping_interval=30,  # 30 sekundda bir ping
+            ping_timeout=10,    # 10 sekundda javob bo'lmasa uziladi
+            max_size=10_485_760  # Maksimum 10MB
+        ):
+            print(f"\n{'='*50}")
+            print(f"🚀 Server ishga tushdi!")
+            print(f"📡 URL: ws://{HOST}:{PORT}")
+            print(f"🔌 Port: {PORT}")
+            print(f"{'='*50}\n")
+            
+            # Serverni doimiy ishlatish
+            await asyncio.Future()
+            
+    except Exception as e:
+        print(f"Serverni ishga tushirishda xato: {e}")
+        raise
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\n👋 Server to'xtatildi")
