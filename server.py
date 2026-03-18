@@ -178,7 +178,9 @@ async def websocket_handler(websocket):
                 print(f"❌ JSON xato: {e}")
                 
     except websockets.exceptions.ConnectionClosed:
-        print(f"🔌 Ulanish uzildi: {device_id or 'Noma\'lum'}")
+        # TUZATILDI: backslash muammosi hal qilindi
+        device_info = device_id if device_id else "Noma lum"
+        print(f"🔌 Ulanish uzildi: {device_info}")
     except Exception as e:
         print(f"❌ Xatolik: {e}")
     finally:
