@@ -91,5 +91,5 @@ async def main():
     ):
         await asyncio.Future()
 
-if name == "main":
+if name == "__main__":
     asyncio.run(main())
