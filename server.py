@@ -5,12 +5,10 @@ import json
 import os
 import signal
 import sys
-from http.server import HTTPServer, BaseHTTPRequestHandler
-import threading
 
 # --- Sozlamalar ---
-# Railway.app bitta PORT o'zgaruvchisini beradi. 
-# Biz bitta portda ham HTTP, ham WebSocket ishlatishimiz mumkin (proxy orqali).
+# Railway.app faqat bitta PORT o'zgaruvchisini beradi.
+# WebSocket serverni aynan shu portda ishga tushiramiz.
 PORT = int(os.environ.get("PORT", 8080))
 HOST = "0.0.0.0"
 
@@ -18,31 +16,6 @@ HOST = "0.0.0.0"
 device_connections = {}    # device_id -> websocket
 authorized_devices = set() # ruxsat berilgan device_id'lar
 frontend_connections = set() # barcha ulangan frontend websocket'lari
-
-# --- HTTP Server (Railway health check uchun) ---
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.send_header('Content-type', 'text/plain')
-        self.end_headers()
-        self.wfile.write(b'Audio Exchange Server is running!')
-    
-    def log_message(self, format, *args):
-        return  # Loglarni o'chirish
-
-def run_http_server():
-    try:
-        # WebSocket bilan bir xil portda ishlashi uchun ehtiyot bo'lish kerak.
-        # Railway-da odatda bitta port kifoya qiladi.
-        httpd = HTTPServer((HOST, PORT), HealthCheckHandler)
-        print(f"📡 HTTP Health check server running on port {PORT}")
-        httpd.serve_forever()
-    except Exception as e:
-        print(f"❌ HTTP server xatosi: {e}")
-
-# HTTP serverni alohida threadda ishga tushirish
-http_thread = threading.Thread(target=run_http_server, daemon=True)
-http_thread.start()
 
 # --- WebSocket Handler ---
 async def websocket_handler(websocket):
@@ -74,10 +47,10 @@ async def websocket_handler(websocket):
             # 2. JSON XABARLAR (CONTROL)
             try:
                 data = json.loads(message)
-                msg_type = data.get('type')
+                msg_type = data.get("type")
                 
                 # FRONTEND ULANISHI
-                if msg_type == 'frontend':
+                if msg_type == "frontend":
                     is_frontend = True
                     frontend_connections.add(websocket)
                     print("✅ Frontend ulandi")
@@ -94,8 +67,8 @@ async def websocket_handler(websocket):
                     }))
                 
                 # ESP32 RO'YXATDAN O'TISHI
-                elif msg_type == 'register':
-                    current_device_id = data.get('deviceId')
+                elif msg_type == "register":
+                    current_device_id = data.get("deviceId")
                     if current_device_id:
                         device_connections[current_device_id] = websocket
                         print(f"✅ Qurilma ro'yxatdan o'tdi: {current_device_id}")
@@ -115,8 +88,8 @@ async def websocket_handler(websocket):
                                 }))
                 
                 # FRONTEND TOMONIDAN RUXSAT BERISH
-                elif msg_type == 'authorize':
-                    target_id = data.get('deviceId')
+                elif msg_type == "authorize":
+                    target_id = data.get("deviceId")
                     if target_id and target_id in device_connections:
                         authorized_devices.add(target_id)
                         print(f"✅ Ruxsat berildi: {target_id}")
@@ -130,8 +103,8 @@ async def websocket_handler(websocket):
                             }))
                 
                 # ULANISHNI YOPISH
-                elif msg_type == 'close':
-                    target_id = data.get('deviceId')
+                elif msg_type == "close":
+                    target_id = data.get("deviceId")
                     if target_id in device_connections:
                         if target_id in authorized_devices:
                             authorized_devices.remove(target_id)
@@ -142,7 +115,7 @@ async def websocket_handler(websocket):
                         except: pass
                         del device_connections[target_id]
                 
-                elif msg_type == 'ping':
+                elif msg_type == "ping":
                     await websocket.send(json.dumps({"type": "pong"}))
                     
             except json.JSONDecodeError:
@@ -167,22 +140,13 @@ async def websocket_handler(websocket):
 
 # --- Asosiy server ---
 async def main():
-    # Railway-da bitta portda ishlash uchun WebSocket serverni HTTP portidan farqli portda emas, 
-    # balki bitta portda (agar proxy qo'llab-quvvatlasa) yoki PORT+1 da ishga tushiramiz.
-    # Railway odatda bitta portni tashqariga chiqaradi. 
-    # Shuning uchun WebSocket-ni PORT+1 da emas, balki PORT-da (HTTP bilan birga) ishlatish tavsiya etiladi.
-    # Lekin bizning hozirgi mantiqda ular alohida. 
-    # Railway-da WebSocket-ni ishlashi uchun biz uni 0.0.0.0:PORT da ishga tushiramiz.
-    
     print(f"🚀 Audio Exchange Server ishga tushmoqda...")
     
-    # MUHIM: Railway-da WebSocket-ni PORT-da ishga tushiramiz (HTTP serverni to'xtatib yoki boshqa portga olib)
-    # Chunki Railway faqat bitta portni (PORT) tashqariga chiqaradi.
-    
+    # Railway-da WebSocket-ni PORT-da ishga tushiramiz.
     async with websockets.serve(
         websocket_handler,
         HOST,
-        PORT, # WebSocket asosiy portda ishlaydi
+        PORT, 
         ping_interval=20,
         ping_timeout=20
     ):
