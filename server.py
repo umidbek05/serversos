@@ -13,7 +13,6 @@ device_connections = {}    # device_id -> websocket
 authorized_devices = set() # ruxsat berilgan device_id'lar
 frontend_connections = set() # barcha ulangan frontend websocket'lari
 
-# --- WebSocket Handler ---
 async def websocket_handler(websocket):
     """WebSocket ulanishlarini boshqarish (ESP32 va Frontend)"""
     global frontend_connections
@@ -28,15 +27,13 @@ async def websocket_handler(websocket):
             if isinstance(message, bytes):
                 # ESP32 dan kelgan audio -> Frontendga yuborish
                 if current_device_id and current_device_id in authorized_devices:
-                    # print(f"🎤 ESP32 dan audio keldi: {len(message)} bytes")
                     for f_ws in frontend_connections:
                         if f_ws.open:
                             await f_ws.send(message)
                 
                 # Frontend dan kelgan audio -> Barcha ruxsat berilgan ESP32'larga yuborish
                 elif is_frontend:
-                    # print(f"💻 Frontend dan audio keldi: {len(message)} bytes")
-                    for d_id in authorized_devices:
+                    for d_id in list(authorized_devices):
                         d_ws = device_connections.get(d_id)
                         if d_ws and d_ws.open:
                             await d_ws.send(message)
@@ -47,18 +44,21 @@ async def websocket_handler(websocket):
                 data = json.loads(message)
                 msg_type = data.get("type")
                 
-                if msg_type == "frontend":
+                # Frontend ulanishi (Frontend kodingizdagi 'frontend_init' bilan moslashtirildi)
+                if msg_type == "frontend" or msg_type == "frontend_init":
                     is_frontend = True
                     frontend_connections.add(websocket)
-                    print("✅ Frontend ulandi")
+                    print(f"✅ Frontend ulandi: {websocket.remote_address}")
                     
+                    # Hozirgi qurilmalar ro'yxatini yuborish
                     devices_list = []
                     for dev_id in device_connections:
                         status = "active" if dev_id in authorized_devices else "pending"
                         devices_list.append({"id": dev_id, "status": status})
                     
+                    # Frontend kodingiz 'device_list' yoki 'list' turini kutayotgan bo'lsa:
                     await websocket.send(json.dumps({
-                        "type": "list",
+                        "type": "device_list", 
                         "devices": devices_list
                     }))
                 
@@ -74,10 +74,11 @@ async def websocket_handler(websocket):
                             "status": "pending"
                         }))
                         
+                        # Frontendga yangi qurilma haqida xabar berish
                         for f_ws in frontend_connections:
                             if f_ws.open:
                                 await f_ws.send(json.dumps({
-                                    "type": "new_pending_device",
+                                    "type": "device_update",
                                     "device": {"id": current_device_id, "status": "pending"}
                                 }))
                 
@@ -87,12 +88,20 @@ async def websocket_handler(websocket):
                         authorized_devices.add(target_id)
                         print(f"✅ Ruxsat berildi: {target_id}")
                         
+                        # Qurilmaga xabar yuborish
                         d_ws = device_connections[target_id]
                         if d_ws.open:
                             await d_ws.send(json.dumps({
                                 "type": "authorized",
+                                "deviceId": target_id,
                                 "status": "active"
                             }))
+                        
+                        # Frontendga tasdiq yuborish
+                        await websocket.send(json.dumps({
+                            "type": "authorized",
+                            "deviceId": target_id
+                        }))
                 
                 elif msg_type == "ping":
                     await websocket.send(json.dumps({"type": "pong"}))
@@ -107,26 +116,20 @@ async def websocket_handler(websocket):
     finally:
         if is_frontend:
             frontend_connections.discard(websocket)
-            print("👋 Frontend uzildi")
-        
         if current_device_id:
             if current_device_id in device_connections:
                 del device_connections[current_device_id]
-            if current_device_id in authorized_devices:
-                authorized_devices.remove(current_device_id)
-            print(f"🧹 Qurilma tozalandi: {current_device_id}")
+            authorized_devices.discard(current_device_id)
+            print(f"🧹 Qurilma o'chirildi: {current_device_id}")
 
 async def main():
-    print(f"🚀 Audio Exchange Server ishga tushmoqda...")
+    print(f"🚀 Audio Server ishga tushmoqda...")
     async with websockets.serve(
-        websocket_handler,
-        HOST,
-        PORT, 
-        ping_interval=20,
-        ping_timeout=20,
-        max_size=10485760 # 10MB gacha paketlarni qabul qilish
+        websocket_handler, HOST, PORT, 
+        ping_interval=20, ping_timeout=20,
+        max_size=10485760 
     ):
-        print(f"✅ WebSocket server ishga tushdi: port {PORT}")
+        print(f"✅ WebSocket server port {PORT} da ishlamoqda")
         await asyncio.Future()
 
 if __name__ == "__main__":
